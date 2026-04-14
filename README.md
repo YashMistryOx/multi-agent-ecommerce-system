@@ -147,3 +147,17 @@ Open [http://localhost:5173](http://localhost:5173). The UI connects with Socket
 `curl -X POST http://localhost:8000/api/rag/ingest`
 
 Chat messages use **text-embedding-3-small** for retrieval and **`gpt-4o-mini`** for answers (override with `OPENAI_CHAT_MODEL` in `.env` if needed).
+
+**Request tracing:** The backend logs each chat turn and graph step to stdout under the `app` logger (timestamp, level, `app.request`, message). Lines share a `[request_id]` prefix so you can follow `lifecycle=chat_turn_*`, `lifecycle=graph_invoke_*`, `step=router_*`, `step=orders_agent_*`, etc.
+
+**Multi-agent (LangGraph):** Each user message is routed to one path: **Orders** (MongoDB `orders` collection via `app/agents/tools/orders.py`), **Returns/refunds** (mock policy and return-case tools), **QnA** (Milvus RAG for products/policies/services), or **Clarify** (asks a short follow-up when intent is unclear). Code lives under `backend/app/agents/` (`graph.py`, `tools/`, `runner.py`).
+
+**Visualizing the main graph:** LangGraph can export a **Mermaid** diagram of the compiled graph (`router` → conditional branches → `orders` / `returns` / `qna` / `clarify` → end). From `backend/` with the venv active:
+
+```bash
+python -m app.agents.visualize
+```
+
+Paste the output into [Mermaid Live](https://mermaid.live) or any Mermaid preview. Save to a file: `python -m app.agents.visualize -o /tmp/main_graph.mmd`. For a terminal ASCII diagram, install `grandalf` (`pip install grandalf`) and run `python -m app.agents.visualize --ascii`. In code: `get_compiled_graph().get_graph().draw_mermaid()` (same string as the CLI).
+
+**MongoDB (orders):** Default URI is `mongodb://admin:password@127.0.0.1:27017/?authSource=admin` with database `omnimarket` and collection `orders`. Override with `MONGODB_URI`, `MONGODB_DATABASE`, and `MONGODB_ORDERS_COLLECTION` in `backend/.env`. Documents are read with flexible field names (`order_id` / `orderId`, `status`, `items` / `line_items`, `carrier`, `eta`, etc.).

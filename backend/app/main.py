@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -8,8 +9,14 @@ import socketio
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.rag.chat import answer_with_rag
+from app.logging_config import setup_logging
+
+setup_logging()
+
+from app.agents.runner import run_multi_agent
 from app.rag.ingest import run_ingestion
+
+log = logging.getLogger("app.request")
 
 
 def _parse_uuid(raw: Optional[str]) -> Optional[str]:
@@ -72,11 +79,17 @@ async def rag_ingest() -> dict:
     Load text/markdown/PDF from backend/assets, chunk, embed with OpenAI
     (text-embedding-3-small), and index into Milvus (replaces collection).
     """
+    rid = uuid.uuid4().hex[:12]
+    log.info("[%s] lifecycle=ingest_start path=POST /api/rag/ingest", rid)
     try:
-        return await asyncio.to_thread(run_ingestion)
+        result = await asyncio.to_thread(run_ingestion)
+        log.info("[%s] lifecycle=ingest_done status=ok chunks=%s", rid, result.get("chunks_indexed"))
+        return result
     except ValueError as e:
+        log.warning("[%s] lifecycle=ingest_fail status=400 err=%s", rid, e)
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
+        log.exception("[%s] lifecycle=ingest_fail status=500", rid)
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
@@ -88,6 +101,13 @@ async def connect(sid: str, environ: dict) -> None:
     parsed = _parse_uuid(raw)
     chat = sessions.get_or_create(parsed)
     session_by_socket[sid] = chat
+    log.info(
+        "[%s] lifecycle=socket_connect sid=%s session_id=%s resumed=%s",
+        uuid.uuid4().hex[:12],
+        sid[:8] + "…",
+        chat.session_id,
+        bool(parsed),
+    )
     await sio.emit(
         "session",
         {"type": "session", "session_id": chat.session_id},
@@ -98,6 +118,7 @@ async def connect(sid: str, environ: dict) -> None:
 @sio.event
 async def disconnect(sid: str) -> None:
     session_by_socket.pop(sid, None)
+    log.info("[%s] lifecycle=socket_disconnect sid=%s", uuid.uuid4().hex[:12], sid[:8] + "…")
 
 
 @sio.on("user_message")
@@ -115,9 +136,28 @@ async def user_message(sid: str, data: dict[str, Any]) -> None:
     if isinstance(data, dict):
         content = (data.get("content") or "").strip()
 
+    req_id = uuid.uuid4().hex[:12]
+    preview = (content[:120] + "…") if len(content) > 120 else content
+    log.info(
+        "[%s] lifecycle=chat_turn_start sid=%s session_id=%s msg_len=%s preview=%r",
+        req_id,
+        sid[:8] + "…",
+        session.session_id,
+        len(content),
+        preview,
+    )
+
     session.messages.append({"role": "user", "content": content})
-    reply = await asyncio.to_thread(answer_with_rag, content)
+    reply = await asyncio.to_thread(run_multi_agent, session.messages, req_id)
     session.messages.append({"role": "assistant", "content": reply})
+
+    log.info(
+        "[%s] lifecycle=chat_turn_done sid=%s session_id=%s reply_len=%s",
+        req_id,
+        sid[:8] + "…",
+        session.session_id,
+        len(reply or ""),
+    )
 
     await sio.emit(
         "assistant",

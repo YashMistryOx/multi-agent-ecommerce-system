@@ -22,6 +22,13 @@ class Settings(BaseSettings):
     rag_top_k: int = 4
     assets_dir: Path = BACKEND_ROOT / "assets"
 
+    # MongoDB (orders tools). Override MONGODB_URI in .env for non-local setups.
+    mongodb_uri: str = (
+        "mongodb://admin:password@127.0.0.1:27017/?authSource=admin"
+    )
+    mongodb_database: str = "omnimarket"
+    mongodb_orders_collection: str = "orders"
+
     @property
     def milvus_connection_args(self) -> dict:
         args: dict = {"uri": self.milvus_uri}
