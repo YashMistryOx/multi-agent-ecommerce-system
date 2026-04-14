@@ -6,6 +6,17 @@ import './App.css'
 
 export const CHAT_SESSION_STORAGE_KEY = 'chat_session_id'
 
+/** Shown once per new session (no prior session in localStorage). */
+const WELCOME_ASSISTANT_MESSAGE = `Hi — welcome!
+
+I'm your **Omnimarket assistant**. I can help you with:
+
+- **Orders** — look up order status, details, and shipping-related questions
+- **Returns** — check return eligibility and start a return when your order qualifies
+- **General questions** — store policies, product info, and FAQs
+
+Ask me anything in plain language. How can I help you today?`
+
 type ChatMessage = { role: 'user' | 'assistant' | 'system'; content: string }
 
 function ChatBubbleBody({ msg }: { msg: ChatMessage }) {
@@ -35,6 +46,7 @@ function App() {
 
   useEffect(() => {
     const stored = localStorage.getItem(CHAT_SESSION_STORAGE_KEY)
+    const hadStoredSessionAtConnect = stored !== null
     setStatus('connecting')
 
     const socket = io({
@@ -64,6 +76,9 @@ function App() {
           role: 'system',
           content: `Connected. Session ${data.session_id}`,
         })
+        if (!hadStoredSessionAtConnect) {
+          appendMessage({ role: 'assistant', content: WELCOME_ASSISTANT_MESSAGE })
+        }
       }
     })
 
