@@ -7,7 +7,6 @@ from typing import Any
 from langchain_core.tools import tool
 from pymongo.errors import PyMongoError
 
-from app.agents.tools.orders import get_order_by_id, list_recent_orders
 from app.db.mongo import find_order_document, get_orders_collection
 
 _RETURN_CASES: dict[str, str] = {
@@ -69,7 +68,8 @@ def check_return_eligibility(order_id: str) -> str:
         if not doc:
             return (
                 f"No order found for '{order_id}'. Ask the customer to confirm the ID "
-                "(format OM-#####) or use list_recent_orders / get_order_by_id."
+                "(format OM-#####). If they have not shared an order yet, the orders step "
+                "should run first to look it up."
             )
         return _eligibility_text_from_order(doc)
     except PyMongoError as e:
@@ -108,8 +108,6 @@ def get_return_case_status(case_id: str) -> str:
 
 
 RETURNS_TOOLS = [
-    get_order_by_id,
-    list_recent_orders,
     get_return_policy_summary,
     check_return_eligibility,
     start_return_request,

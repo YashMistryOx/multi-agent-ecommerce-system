@@ -55,14 +55,32 @@ def run_multi_agent(
     )
     graph = get_compiled_graph()
     result = graph.invoke(
-        {"messages": lc_messages, "route": None, "request_id": rid}
+        {
+            "messages": lc_messages,
+            "route": None,
+            "request_id": rid,
+            "graph_trace": [],
+        }
     )
     route = result.get("route")
+    trace = list(result.get("graph_trace") or [])
     final_msgs = result.get("messages") or []
+    path_str = " → ".join(trace) if trace else "(empty)"
+    print(
+        f"\n[{rid}] ========== GRAPH EXECUTION COMPLETE ==========\n"
+        f"  graph_trace (full list): {trace}\n"
+        f"  graph_trace (path):      {path_str}\n"
+        f"  steps (node count):      {len(trace)}\n"
+        f"  router intent (route):   {route}\n"
+        f"==============================================\n",
+        flush=True,
+    )
     log.info(
-        "[%s] lifecycle=graph_invoke_done route=%s messages_out=%s",
+        "[%s] lifecycle=graph_invoke_done route=%s graph_trace=%s nodes=%s messages_out=%s",
         rid,
         route,
+        trace,
+        len(trace),
         len(final_msgs),
     )
 

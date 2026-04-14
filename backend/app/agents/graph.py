@@ -36,14 +36,18 @@ Use the conversation context. Prefer the most specific intent."""
 ORDERS_PROMPT = (
     "You are the Omnimarket **Orders** specialist. Help with order lookup, status, and "
     "shipping details. Use tools to fetch data. If the customer has no order ID, use "
-    "list_recent_orders or ask for their order ID (format OM-#####). Be concise and friendly."
+    "list_recent_orders or ask for their order ID (format OM-#####). "
+    "When the user is asking about **returns or refunds**, still focus this step on "
+    "finding and confirming the right order (ID, status, items, ship state). "
+    "Do not give full return-policy detail here—that is handled in the next step. "
+    "Be concise and friendly."
 )
 
 RETURNS_PROMPT = (
-    "You are the Omnimarket **Returns & refunds** specialist. Help with return eligibility, "
-    "policy, starting a return, and refund case status. "
-    "You have the same order lookup tools as the Orders team (`get_order_by_id`, `list_recent_orders`) "
-    "plus return-specific tools. Use them to verify an order exists before saying it is missing. "
+    "You are the Omnimarket **Returns & refunds** specialist (second step in return flows). "
+    "Order lookup already ran in the previous assistant turn—use the conversation above for "
+    "order IDs and status before asking again. Use only return tools: policy summary, "
+    "eligibility checks, starting a return, and return-case status. "
     "Be concise, empathetic, and clear about next steps."
 )
 
@@ -95,7 +99,7 @@ def _router_node(state: AgentState) -> dict:
     s = get_settings()
     if not s.openai_api_key:
         log.warning("[%s] step=router_exit intent=qna reason=no_api_key", rid)
-        return {"route": "qna"}
+        return {"route": "qna", "graph_trace": ["router"]}
     llm = ChatOpenAI(
         model=s.openai_chat_model,
         temperature=0.0,
@@ -111,27 +115,28 @@ def _router_node(state: AgentState) -> dict:
         log.warning("[%s] step=router_fallback intent=qna err=%s", rid, e)
         intent = "qna"
     log.info("[%s] step=router_exit intent=%s", rid, intent)
-    return {"route": intent}
+    return {"route": intent, "graph_trace": ["router"]}
 
 
 def _orders_node(state: AgentState) -> dict:
     rid = _req_id(state)
-    log.info("[%s] step=orders_agent_enter msgs_in=%s", rid, len(state["messages"]))
+    pipeline = "return_pipeline" if state.get("route") == "returns" else "orders_only"
+    log.info("[%s] step=orders_agent_enter pipeline=%s msgs_in=%s", rid, pipeline, len(state["messages"]))
     prior = list(state["messages"])
     result = _orders_react().invoke({"messages": prior})
     new_msgs = result["messages"][len(prior) :]
     log.info("[%s] step=orders_agent_exit new_msgs=%s", rid, len(new_msgs))
-    return {"messages": new_msgs}
+    return {"messages": new_msgs, "graph_trace": ["orders"]}
 
 
 def _returns_node(state: AgentState) -> dict:
     rid = _req_id(state)
-    log.info("[%s] step=returns_agent_enter msgs_in=%s", rid, len(state["messages"]))
+    log.info("[%s] step=returns_agent_enter pipeline=return_pipeline msgs_in=%s", rid, len(state["messages"]))
     prior = list(state["messages"])
     result = _returns_react().invoke({"messages": prior})
     new_msgs = result["messages"][len(prior) :]
     log.info("[%s] step=returns_agent_exit new_msgs=%s", rid, len(new_msgs))
-    return {"messages": new_msgs}
+    return {"messages": new_msgs, "graph_trace": ["returns"]}
 
 
 def _qna_node(state: AgentState) -> dict:
@@ -139,7 +144,7 @@ def _qna_node(state: AgentState) -> dict:
     log.info("[%s] step=qna_rag_enter", rid)
     text = answer_with_rag(_last_human_text(state["messages"]))
     log.info("[%s] step=qna_rag_exit reply_len=%s", rid, len(text or ""))
-    return {"messages": [AIMessage(content=text)]}
+    return {"messages": [AIMessage(content=text)], "graph_trace": ["qna"]}
 
 
 def _clarify_node(state: AgentState) -> dict:
@@ -165,14 +170,29 @@ def _clarify_node(state: AgentState) -> dict:
     )
     content = msg.content if hasattr(msg, "content") else str(msg)
     log.info("[%s] step=clarify_exit reply_len=%s", rid, len(str(content)))
-    return {"messages": [AIMessage(content=str(content))]}
+    return {"messages": [AIMessage(content=str(content))], "graph_trace": ["clarify"]}
 
 
-def _route_edge(state: AgentState) -> str:
+def _router_to_first_step(state: AgentState) -> str:
+    """
+    Map high-level intent to first graph node.
+    `returns` and `orders` both enter the **orders** node first; `returns` continues to **returns** after.
+    """
     r = state.get("route")
-    if r in ("orders", "returns", "qna", "clarify"):
-        return r
+    if r in ("orders", "returns"):
+        return "orders"
+    if r == "qna":
+        return "qna"
+    if r == "clarify":
+        return "clarify"
     return "qna"
+
+
+def _after_orders(state: AgentState) -> str:
+    """Return/refund intent: orders agent → returns agent. Pure order intent: stop here."""
+    if state.get("route") == "returns":
+        return "returns"
+    return "done"
 
 
 def build_graph():
@@ -186,15 +206,21 @@ def build_graph():
     g.add_edge(START, "router")
     g.add_conditional_edges(
         "router",
-        _route_edge,
+        _router_to_first_step,
         {
             "orders": "orders",
-            "returns": "returns",
             "qna": "qna",
             "clarify": "clarify",
         },
     )
-    g.add_edge("orders", END)
+    g.add_conditional_edges(
+        "orders",
+        _after_orders,
+        {
+            "returns": "returns",
+            "done": END,
+        },
+    )
     g.add_edge("returns", END)
     g.add_edge("qna", END)
     g.add_edge("clarify", END)

@@ -1,10 +1,23 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { io, type Socket } from 'socket.io-client'
 import './App.css'
 
 export const CHAT_SESSION_STORAGE_KEY = 'chat_session_id'
 
 type ChatMessage = { role: 'user' | 'assistant' | 'system'; content: string }
+
+function ChatBubbleBody({ msg }: { msg: ChatMessage }) {
+  if (msg.role === 'assistant') {
+    return (
+      <div className="chat-msg-body chat-msg-body--markdown">
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+      </div>
+    )
+  }
+  return <span className="chat-msg-body">{msg.content}</span>
+}
 
 function App() {
   const [connectionKey, setConnectionKey] = useState(0)
@@ -114,7 +127,7 @@ function App() {
         {messages.map((m, i) => (
           <li key={i} className={`chat-msg chat-msg--${m.role}`}>
             <span className="chat-msg-role">{m.role}</span>
-            <span className="chat-msg-body">{m.content}</span>
+            <ChatBubbleBody msg={m} />
           </li>
         ))}
       </ul>

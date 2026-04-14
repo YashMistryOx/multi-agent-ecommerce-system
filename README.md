@@ -148,9 +148,9 @@ Open [http://localhost:5173](http://localhost:5173). The UI connects with Socket
 
 Chat messages use **text-embedding-3-small** for retrieval and **`gpt-4o-mini`** for answers (override with `OPENAI_CHAT_MODEL` in `.env` if needed).
 
-**Request tracing:** The backend logs each chat turn and graph step to stdout under the `app` logger (timestamp, level, `app.request`, message). Lines share a `[request_id]` prefix so you can follow `lifecycle=chat_turn_*`, `lifecycle=graph_invoke_*`, `step=router_*`, `step=orders_agent_*`, etc.
+**Request tracing:** The backend logs each chat turn and graph step to stdout under the `app` logger (timestamp, level, `app.request`, message). Lines share a `[request_id]` prefix so you can follow `lifecycle=chat_turn_*`, `lifecycle=graph_invoke_*`, `step=router_*`, `step=orders_agent_*`, etc. After each graph run, **`print`** emits a **`GRAPH EXECUTION COMPLETE`** block with the full **`graph_trace`** list, arrow path, step count, and router `route`; logs also include `graph_trace=[...]` on `lifecycle=graph_invoke_done`.
 
-**Multi-agent (LangGraph):** Each user message is routed to one path: **Orders** (MongoDB `orders` collection via `app/agents/tools/orders.py`), **Returns/refunds** (mock policy and return-case tools), **QnA** (Milvus RAG for products/policies/services), or **Clarify** (asks a short follow-up when intent is unclear). Code lives under `backend/app/agents/` (`graph.py`, `tools/`, `runner.py`).
+**Multi-agent (LangGraph):** The router sends each message to one top-level intent: **orders-only** (order tools → end), **return flow** (order tools **then** returns tools—two agent steps in one graph run), **QnA** (Milvus RAG), or **clarify**. Orders use MongoDB via `app/agents/tools/orders.py`; returns use only `app/agents/tools/returns.py` (no duplicated order-list tools). Code: `backend/app/agents/` (`graph.py`, `tools/`, `runner.py`).
 
 **Visualizing the main graph:** LangGraph can export a **Mermaid** diagram of the compiled graph (`router` → conditional branches → `orders` / `returns` / `qna` / `clarify` → end). From `backend/` with the venv active:
 
