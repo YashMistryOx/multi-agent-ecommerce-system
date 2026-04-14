@@ -119,3 +119,31 @@ LLM → agents
 Vector DB → RAG
 FastAPI → APIs
 Mock DB → orders/products
+
+## Web chat (local development)
+
+**Backend** (FastAPI + Socket.IO, port 8000):
+
+```bash
+cd backend
+python3 -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+**Frontend** (Vite + React, proxies `/socket.io` to the backend):
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open [http://localhost:5173](http://localhost:5173). The UI connects with Socket.IO on load, stores `session_id` in `localStorage` under `chat_session_id`, and **New session** clears storage and opens a fresh backend session.
+
+**RAG (Milvus + LangChain):** Put knowledge files under `backend/assets` (`.txt`, `.md`, `.pdf`). Set `OPENAI_API_KEY` in `backend/.env` (and optional `MILVUS_URI`, default `http://127.0.0.1:19530`). Start Milvus locally, then run ingestion once:
+
+`curl -X POST http://localhost:8000/api/rag/ingest`
+
+Chat messages use **text-embedding-3-small** for retrieval and **`gpt-4o-mini`** for answers (override with `OPENAI_CHAT_MODEL` in `.env` if needed).
