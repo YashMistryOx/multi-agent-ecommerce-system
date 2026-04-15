@@ -4,7 +4,7 @@ import logging
 from functools import lru_cache
 from typing import Literal
 
-from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_openai import ChatOpenAI
 from langchain.agents import create_agent
 from langgraph.graph import END, START, StateGraph
@@ -69,6 +69,24 @@ def _last_human_text(messages: list[AnyMessage]) -> str:
         if getattr(m, "type", None) == "human":
             return str(getattr(m, "content", "") or "")
     return ""
+
+
+def _orders_successfully_looked_up_order(messages: list[AnyMessage]) -> bool:
+    """
+    True if get_order_by_id ran and returned a document (not the not-found string).
+
+    Used so the return pipeline does not run the Returns agent in the same invoke when
+    the Orders agent only asked for an ID or listed orders without a resolved lookup.
+    """
+    for m in messages:
+        if not isinstance(m, ToolMessage):
+            continue
+        name = getattr(m, "name", None) or ""
+        if name != "get_order_by_id":
+            continue
+        if "No order found" not in str(m.content or ""):
+            return True
+    return False
 
 
 @lru_cache
@@ -189,9 +207,20 @@ def _router_to_first_step(state: AgentState) -> str:
 
 
 def _after_orders(state: AgentState) -> str:
-    """Return/refund intent: orders agent → returns agent. Pure order intent: stop here."""
-    if state.get("route") == "returns":
+    """
+    Pure `orders` intent: stop after the Orders agent.
+
+    `returns` intent: run the Returns agent only after a successful get_order_by_id in
+    this graph run. If the Orders agent only asked for an order ID (no lookup yet),
+    end here so the user can reply; the next message will run the graph again.
+    """
+    rid = _req_id(state)
+    if state.get("route") != "returns":
+        return "done"
+    if _orders_successfully_looked_up_order(state["messages"]):
+        log.info("[%s] step=after_orders next=returns", rid)
         return "returns"
+    log.info("[%s] step=after_orders next=done reason=skip_returns_until_order_resolved", rid)
     return "done"
 
 
