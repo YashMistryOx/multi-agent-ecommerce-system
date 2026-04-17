@@ -26,10 +26,13 @@ def _req_id(state: AgentState) -> str:
 
 ROUTER_SYSTEM = """You route Omnimarket customer messages to exactly one intent:
 
-- policies: Questions about Omnimarket, the marketplace, shipping policies, return policy overview, FAQs, warranties, company info — answered from the knowledge base (RAG).
+- policies: Questions about Omnimarket, the marketplace, shipping policies, return/refund policy overview, FAQs, warranties, company info — answered from the knowledge base (RAG). Also use this for eligibility questions like "can I return after X days?", "am I allowed to return if…", "what is the return window?" — these are policy lookups, NOT return initiations.
 - orders: Order status, tracking, "where is my package", looking up **their** orders, purchase history, order IDs, ETA — requires email + order data from our database.
-- returns: Product problems, wrong/damaged item, doesn't want the purchase, starting a return or refund for **their** order — return workflow with eligibility and review.
+- returns: User explicitly wants to **start or submit** a return/refund for a specific order they own — e.g. "I want to return this", "please refund my order", "I received a wrong/damaged item". Do NOT use this if they are only asking whether returning is possible or allowed.
 - clarify: Empty, off-topic, or too ambiguous.
+
+Key distinction — "can I return my purchase after 8 days?" → **policies** (eligibility question).
+"I want to return my purchase" → **returns** (action intent).
 
 Use conversation context. Prefer the most specific intent."""
 

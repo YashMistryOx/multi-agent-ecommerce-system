@@ -72,10 +72,7 @@ function App() {
       if (data?.session_id) {
         setSessionId(data.session_id)
         localStorage.setItem(CHAT_SESSION_STORAGE_KEY, data.session_id)
-        appendMessage({
-          role: 'system',
-          content: `Connected. Session ${data.session_id}`,
-        })
+        
         if (!hadStoredSessionAtConnect) {
           appendMessage({ role: 'assistant', content: WELCOME_ASSISTANT_MESSAGE })
         }

@@ -463,12 +463,12 @@ def return_workflow_node(state: AgentState) -> dict:
     ]
     if db_ok:
         lines.append("\nWe saved your request in our system.")
-    if email:
-        lines.append(
-            f"\nA confirmation was sent to **{email}**."
-            if mailed
-            else "\nWe could not send email (SMTP not configured); your request may still be recorded."
-        )
+    # if email: # TODO: check this later
+    #     lines.append(
+    #         f"\nA confirmation was sent to **{email}**."
+    #         if mailed
+    #         else "\nWe could not send email (SMTP not configured); your request may still be recorded."
+    #     )
 
     return {
         "messages": [AIMessage(content="\n".join(lines))],
