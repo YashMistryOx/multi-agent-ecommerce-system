@@ -1,18 +1,19 @@
-"""LangGraph: router → orders | returns | qna | clarify."""
+"""LangGraph: router → policies (RAG) | orders workflow | returns workflow | clarify."""
 
 import logging
 from functools import lru_cache
 from typing import Literal
 
-from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
-from langchain.agents import create_agent
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field
 
 from app.agents.state import AgentState
-from app.agents.tools.orders import ORDERS_TOOLS
-from app.agents.tools.returns import RETURNS_TOOLS
+from app.agents.workflows.subgraphs import (
+    build_orders_subgraph,
+    build_returns_workflow_subgraph,
+)
 from app.rag.chat import answer_with_rag
 from app.settings import get_settings
 
@@ -25,35 +26,48 @@ def _req_id(state: AgentState) -> str:
 
 ROUTER_SYSTEM = """You route Omnimarket customer messages to exactly one intent:
 
-- orders: Order status, tracking, shipping, delivery, "where is my package", order IDs, ETA, carrier.
-- returns: Returns, refunds, exchanges, damaged/wrong item, how to send back, refund timing.
-- qna: Product catalog, services, warranties, general policies, FAQs, company info, anything best answered from the knowledge base.
-- clarify: The message is empty, off-topic, or too ambiguous to route (e.g. only "help" with no topic).
+- policies: Questions about Omnimarket, the marketplace, shipping policies, return policy overview, FAQs, warranties, company info — answered from the knowledge base (RAG).
+- orders: Order status, tracking, "where is my package", looking up **their** orders, purchase history, order IDs, ETA — requires email + order data from our database.
+- returns: Product problems, wrong/damaged item, doesn't want the purchase, starting a return or refund for **their** order — return workflow with eligibility and review.
+- clarify: Empty, off-topic, or too ambiguous.
 
-Use the conversation context. Prefer the most specific intent."""
+Use conversation context. Prefer the most specific intent."""
 
 
-ORDERS_PROMPT = (
-    "You are the Omnimarket **Orders** specialist. Help with order lookup, status, and "
-    "shipping details. Use tools to fetch data. If the customer has no order ID, use "
-    "list_recent_orders or ask for their order ID (format OM-#####). "
-    "When the user is asking about **returns or refunds**, still focus this step on "
-    "finding and confirming the right order (ID, status, items, ship state). "
-    "Do not give full return-policy detail here—that is handled in the next step. "
-    "Be concise and friendly."
-)
-
-RETURNS_PROMPT = (
-    "You are the Omnimarket **Returns & refunds** specialist (second step in return flows). "
-    "Order lookup already ran in the previous assistant turn—use the conversation above for "
-    "order IDs and status before asking again. Use only return tools: policy summary, "
-    "eligibility checks, starting a return, and return-case status. "
-    "Be concise, empathetic, and clear about next steps."
-)
+def _router_session_context(state: AgentState) -> str:
+    """Summarize in-progress workflows so the router can continue vs switch topics without hardcoded sticky rules."""
+    rw = state.get("return_workflow") or {}
+    ow = state.get("orders_workflow") or {}
+    lines: list[str] = []
+    ph_r = rw.get("phase") or ""
+    ph_o = ow.get("phase") or ""
+    if rw.get("email") and ph_r not in ("completed", "rejected", "policy_denied"):
+        pending = bool(rw.get("recent_order_ids"))
+        lines.append(
+            f"- Returns flow active: phase={ph_r!r}. "
+            f"The user may be answering a follow-up (reason, order choice, or list item). "
+            f"Assistant showed a numbered order list: {pending}."
+        )
+    if ow.get("email") and ph_o not in ("done", "no_orders"):
+        pending = bool(ow.get("recent_order_ids"))
+        lines.append(
+            f"- Order lookup flow active: phase={ph_o!r}. "
+            f"The user may be continuing order lookup. Assistant showed a numbered order list: {pending}."
+        )
+    if not lines:
+        return ""
+    return (
+        "\n\n## Session context (routing hints only)\n"
+        + "\n".join(lines)
+        + "\n\nIf the latest message continues that workflow (including short replies like a number, "
+        "an order id, or natural language about *their* order), choose the matching intent "
+        "(**returns** or **orders**). Choose **policies** only if they clearly moved to a general "
+        "knowledge question. Choose **clarify** only if the message is empty or unusable."
+    )
 
 
 class RouteIntent(BaseModel):
-    intent: Literal["orders", "returns", "qna", "clarify"] = Field(
+    intent: Literal["policies", "orders", "returns", "clarify"] = Field(
         description="Single routing intent for the user's latest need"
     )
 
@@ -71,53 +85,20 @@ def _last_human_text(messages: list[AnyMessage]) -> str:
     return ""
 
 
-def _orders_successfully_looked_up_order(messages: list[AnyMessage]) -> bool:
-    """
-    True if get_order_by_id ran and returned a document (not the not-found string).
-
-    Used so the return pipeline does not run the Returns agent in the same invoke when
-    the Orders agent only asked for an ID or listed orders without a resolved lookup.
-    """
-    for m in messages:
-        if not isinstance(m, ToolMessage):
-            continue
-        name = getattr(m, "name", None) or ""
-        if name != "get_order_by_id":
-            continue
-        if "No order found" not in str(m.content or ""):
-            return True
-    return False
-
-
-@lru_cache
-def _orders_react():
-    s = get_settings()
-    llm = ChatOpenAI(
-        model=s.openai_chat_model,
-        temperature=0.2,
-        api_key=s.openai_api_key,
-    )
-    return create_agent(llm, ORDERS_TOOLS, system_prompt=ORDERS_PROMPT)
-
-
-@lru_cache
-def _returns_react():
-    s = get_settings()
-    llm = ChatOpenAI(
-        model=s.openai_chat_model,
-        temperature=0.2,
-        api_key=s.openai_api_key,
-    )
-    return create_agent(llm, RETURNS_TOOLS, system_prompt=RETURNS_PROMPT)
-
-
 def _router_node(state: AgentState) -> dict:
     rid = _req_id(state)
     log.info("[%s] step=router_enter", rid)
     s = get_settings()
     if not s.openai_api_key:
-        log.warning("[%s] step=router_exit intent=qna reason=no_api_key", rid)
-        return {"route": "qna", "graph_trace": ["router"]}
+        log.warning("[%s] step=router_exit intent=policies reason=no_api_key", rid)
+        return {
+            "route": "policies",
+            "graph_trace": ["router"],
+            "return_workflow": {},
+            "orders_workflow": {},
+        }
+
+    router_prompt = ROUTER_SYSTEM + _router_session_context(state)
     llm = ChatOpenAI(
         model=s.openai_chat_model,
         temperature=0.0,
@@ -126,43 +107,27 @@ def _router_node(state: AgentState) -> dict:
     structured = llm.with_structured_output(RouteIntent)
     try:
         out = structured.invoke(
-            [SystemMessage(content=ROUTER_SYSTEM), *_tail(state["messages"])]
+            [SystemMessage(content=router_prompt), *_tail(state["messages"])]
         )
         intent = out.intent
     except Exception as e:
-        log.warning("[%s] step=router_fallback intent=qna err=%s", rid, e)
-        intent = "qna"
+        log.warning("[%s] step=router_fallback intent=policies err=%s", rid, e)
+        intent = "policies"
     log.info("[%s] step=router_exit intent=%s", rid, intent)
-    return {"route": intent, "graph_trace": ["router"]}
+    updates: dict = {"route": intent, "graph_trace": ["router"]}
+    if intent != "returns":
+        updates["return_workflow"] = {}
+    if intent != "orders":
+        updates["orders_workflow"] = {}
+    return updates
 
 
-def _orders_node(state: AgentState) -> dict:
+def _policies_node(state: AgentState) -> dict:
     rid = _req_id(state)
-    pipeline = "return_pipeline" if state.get("route") == "returns" else "orders_only"
-    log.info("[%s] step=orders_agent_enter pipeline=%s msgs_in=%s", rid, pipeline, len(state["messages"]))
-    prior = list(state["messages"])
-    result = _orders_react().invoke({"messages": prior})
-    new_msgs = result["messages"][len(prior) :]
-    log.info("[%s] step=orders_agent_exit new_msgs=%s", rid, len(new_msgs))
-    return {"messages": new_msgs, "graph_trace": ["orders"]}
-
-
-def _returns_node(state: AgentState) -> dict:
-    rid = _req_id(state)
-    log.info("[%s] step=returns_agent_enter pipeline=return_pipeline msgs_in=%s", rid, len(state["messages"]))
-    prior = list(state["messages"])
-    result = _returns_react().invoke({"messages": prior})
-    new_msgs = result["messages"][len(prior) :]
-    log.info("[%s] step=returns_agent_exit new_msgs=%s", rid, len(new_msgs))
-    return {"messages": new_msgs, "graph_trace": ["returns"]}
-
-
-def _qna_node(state: AgentState) -> dict:
-    rid = _req_id(state)
-    log.info("[%s] step=qna_rag_enter", rid)
-    text = answer_with_rag(_last_human_text(state["messages"]))
-    log.info("[%s] step=qna_rag_exit reply_len=%s", rid, len(text or ""))
-    return {"messages": [AIMessage(content=text)], "graph_trace": ["qna"]}
+    log.info("[%s] step=policies_rag_enter", rid)
+    text = answer_with_rag(_last_human_text(state["messages"]), mode="policies")
+    log.info("[%s] step=policies_rag_exit reply_len=%s", rid, len(text or ""))
+    return {"messages": [AIMessage(content=text)], "graph_trace": ["policies"]}
 
 
 def _clarify_node(state: AgentState) -> dict:
@@ -179,8 +144,8 @@ def _clarify_node(state: AgentState) -> dict:
             SystemMessage(
                 content=(
                     "You are Omnimarket support. The user's message was unclear. "
-                    "Ask one short, friendly clarifying question to learn whether they need "
-                    "help with an order, a return/refund, or general Omnimarket information."
+                    "Ask one short, friendly clarifying question: policies / their orders / "
+                    "or a return or product issue."
                 )
             ),
             *_tail(state["messages"], 8),
@@ -191,67 +156,44 @@ def _clarify_node(state: AgentState) -> dict:
     return {"messages": [AIMessage(content=str(content))], "graph_trace": ["clarify"]}
 
 
-def _router_to_first_step(state: AgentState) -> str:
-    """
-    Map high-level intent to first graph node.
-    `returns` and `orders` both enter the **orders** node first; `returns` continues to **returns** after.
-    """
+def _router_to_subgraph(state: AgentState) -> str:
     r = state.get("route")
-    if r in ("orders", "returns"):
+    if r == "policies":
+        return "policies"
+    if r == "orders":
         return "orders"
-    if r == "qna":
-        return "qna"
+    if r == "returns":
+        return "returns"
     if r == "clarify":
         return "clarify"
-    return "qna"
-
-
-def _after_orders(state: AgentState) -> str:
-    """
-    Pure `orders` intent: stop after the Orders agent.
-
-    `returns` intent: run the Returns agent only after a successful get_order_by_id in
-    this graph run. If the Orders agent only asked for an order ID (no lookup yet),
-    end here so the user can reply; the next message will run the graph again.
-    """
-    rid = _req_id(state)
-    if state.get("route") != "returns":
-        return "done"
-    if _orders_successfully_looked_up_order(state["messages"]):
-        log.info("[%s] step=after_orders next=returns", rid)
-        return "returns"
-    log.info("[%s] step=after_orders next=done reason=skip_returns_until_order_resolved", rid)
-    return "done"
+    return "policies"
 
 
 def build_graph():
+    orders_sg = build_orders_subgraph()
+    returns_sg = build_returns_workflow_subgraph()
+
     g = StateGraph(AgentState)
     g.add_node("router", _router_node)
-    g.add_node("orders", _orders_node)
-    g.add_node("returns", _returns_node)
-    g.add_node("qna", _qna_node)
+    g.add_node("policies", _policies_node)
+    g.add_node("orders", orders_sg)
+    g.add_node("returns", returns_sg)
     g.add_node("clarify", _clarify_node)
 
     g.add_edge(START, "router")
     g.add_conditional_edges(
         "router",
-        _router_to_first_step,
+        _router_to_subgraph,
         {
+            "policies": "policies",
             "orders": "orders",
-            "qna": "qna",
+            "returns": "returns",
             "clarify": "clarify",
         },
     )
-    g.add_conditional_edges(
-        "orders",
-        _after_orders,
-        {
-            "returns": "returns",
-            "done": END,
-        },
-    )
+    g.add_edge("policies", END)
+    g.add_edge("orders", END)
     g.add_edge("returns", END)
-    g.add_edge("qna", END)
     g.add_edge("clarify", END)
     return g.compile()
 
@@ -264,5 +206,3 @@ def get_compiled_graph():
 def clear_graph_cache() -> None:
     """Clear cached graphs (e.g. after tests or model changes)."""
     get_compiled_graph.cache_clear()
-    _orders_react.cache_clear()
-    _returns_react.cache_clear()

@@ -32,6 +32,12 @@ def _parse_uuid(raw: Optional[str]) -> Optional[str]:
 class ChatSession:
     session_id: str
     messages: list[dict[str, Any]] = field(default_factory=list)
+    # Optional profile (e.g. from client); pre-fills email for workflows.
+    user_email: str | None = None
+    # Email verified in chat (shared by orders + returns workflows).
+    authenticated_email: str | None = None
+    return_workflow: dict[str, Any] = field(default_factory=dict)
+    orders_workflow: dict[str, Any] = field(default_factory=dict)
 
 
 class SessionManager:
@@ -100,6 +106,9 @@ async def connect(sid: str, environ: dict) -> None:
     raw = raw_list[0] if raw_list else None
     parsed = _parse_uuid(raw)
     chat = sessions.get_or_create(parsed)
+    email_list = query.get("user_email")
+    if email_list and email_list[0].strip():
+        chat.user_email = email_list[0].strip()
     session_by_socket[sid] = chat
     log.info(
         "[%s] lifecycle=socket_connect sid=%s session_id=%s resumed=%s",
@@ -135,6 +144,9 @@ async def user_message(sid: str, data: dict[str, Any]) -> None:
     content = ""
     if isinstance(data, dict):
         content = (data.get("content") or "").strip()
+        ue = (data.get("user_email") or "").strip()
+        if ue:
+            session.user_email = ue
 
     req_id = uuid.uuid4().hex[:12]
     preview = (content[:120] + "…") if len(content) > 120 else content
@@ -148,7 +160,7 @@ async def user_message(sid: str, data: dict[str, Any]) -> None:
     )
 
     session.messages.append({"role": "user", "content": content})
-    reply = await asyncio.to_thread(run_multi_agent, session.messages, req_id)
+    reply = await asyncio.to_thread(run_multi_agent, session.messages, req_id, session)
     session.messages.append({"role": "assistant", "content": reply})
 
     log.info(

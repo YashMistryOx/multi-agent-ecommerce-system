@@ -27,10 +27,13 @@ def _session_to_lc_messages(session_messages: list[dict[str, Any]]) -> list:
 def run_multi_agent(
     session_messages: list[dict[str, Any]],
     request_id: str | None = None,
+    session: Any = None,
 ) -> str:
     """
-    Run router + specialist (orders / returns / RAG QnA / clarify) and return
-    the assistant reply text.
+    Run router + subgraphs (policies RAG, orders workflow, returns workflow, clarify).
+
+    Persists `return_workflow`, `orders_workflow`, and `authenticated_email` on `session`
+    when provided.
     """
     rid = request_id or uuid.uuid4().hex[:12]
     s = get_settings()
@@ -53,6 +56,16 @@ def run_multi_agent(
         rid,
         len(lc_messages),
     )
+    rw: dict[str, Any] = {}
+    ow: dict[str, Any] = {}
+    session_email: str | None = None
+    auth_email: str | None = None
+    if session is not None:
+        rw = dict(getattr(session, "return_workflow", None) or {})
+        ow = dict(getattr(session, "orders_workflow", None) or {})
+        session_email = getattr(session, "user_email", None)
+        auth_email = getattr(session, "authenticated_email", None)
+
     graph = get_compiled_graph()
     result = graph.invoke(
         {
@@ -60,8 +73,19 @@ def run_multi_agent(
             "route": None,
             "request_id": rid,
             "graph_trace": [],
+            "return_workflow": rw,
+            "orders_workflow": ow,
+            "session_user_email": session_email,
+            "authenticated_email": auth_email,
         }
     )
+
+    if session is not None:
+        session.return_workflow = dict(result.get("return_workflow") or {})
+        session.orders_workflow = dict(result.get("orders_workflow") or {})
+        ae = result.get("authenticated_email")
+        if ae:
+            session.authenticated_email = ae
     route = result.get("route")
     trace = list(result.get("graph_trace") or [])
     final_msgs = result.get("messages") or []

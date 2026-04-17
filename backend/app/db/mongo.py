@@ -18,6 +18,7 @@ __all__ = [
     "get_mongo_client",
     "get_mongo_database",
     "get_orders_collection",
+    "get_returns_collection",
 ]
 
 _client_lock = threading.Lock()
@@ -47,6 +48,12 @@ def get_orders_collection() -> Collection:
     """Orders collection configured in settings."""
     s = get_settings()
     return get_mongo_client()[s.mongodb_database][s.mongodb_orders_collection]
+
+
+def get_returns_collection() -> Collection:
+    """Return cases / requests collection."""
+    s = get_settings()
+    return get_mongo_client()[s.mongodb_database][s.mongodb_returns_collection]
 
 
 def find_order_document(collection: Collection, raw_id: str) -> dict[str, Any] | None:

@@ -1,0 +1,10 @@
+[
+  {
+    "return_id": "RR-DEMO0001",
+    "order_id": "OM-10001",
+    "customer_email": "demo.customer@omnimarket.test",
+    "reason": "Example seed row — wrong item received (demo only).",
+    "status": "pending_review",
+    "created_at": "2025-04-01T12:00:00Z"
+  }
+]

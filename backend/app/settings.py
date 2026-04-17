@@ -28,6 +28,15 @@ class Settings(BaseSettings):
     )
     mongodb_database: str = "omnimarket"
     mongodb_orders_collection: str = "orders"
+    mongodb_returns_collection: str = "returns"
+
+    # Gmail SMTP (use app password). Leave empty to skip sending email.
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_use_tls: bool = True
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from_email: str = ""
 
     @property
     def milvus_connection_args(self) -> dict:
