@@ -142,6 +142,23 @@ def cancel_order(order_id: int, reason: str = "customer") -> Dict[str, Any]:
         return {"error": str(e)}
 
 
+@tool
+def get_cancellation_policy() -> str:
+    """Fetch the store's cancellation / refund policy from Shopify."""
+    url = f"{_base_url()}/policies.json"
+    try:
+        response = requests.get(url, headers=_shopify_headers())
+        response.raise_for_status()
+        policies = response.json().get("policies", [])
+        for policy in policies:
+            if "refund" in policy.get("title", "").lower():
+                return policy.get("body", "").strip()
+        # fall back to first policy if no explicit refund policy
+        return policies[0].get("body", "").strip() if policies else "No cancellation policy found."
+    except Exception as e:
+        return f"Unable to fetch cancellation policy: {e}"
+
+
 ORDERS_TOOL_FUNCTIONS = [
     get_orders_by_email,
     get_order_by_id,
@@ -149,4 +166,5 @@ ORDERS_TOOL_FUNCTIONS = [
     get_order_items,
     get_order_tracking,
     cancel_order,
+    get_cancellation_policy,
 ]

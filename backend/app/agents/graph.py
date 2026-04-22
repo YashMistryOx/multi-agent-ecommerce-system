@@ -1,11 +1,15 @@
 from langchain_core.messages import SystemMessage
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 
 from app.agents import llm
-from app.agents.orders import orders_agent
+from app.agents.orders_graph import orders_graph
 from app.agents.products import products_agent
-from app.agents.prompts import ORDERS_AGENT_PROMPT, PRODUCTS_AGENT_PROMPT
+from app.agents.prompts import PRODUCTS_AGENT_PROMPT
 from app.agents.state import AgentState
+
+# products_node still uses a wrapper because products_agent is not a compiled
+# LangGraph sub-graph, so there's no interrupt propagation issue there.
 
 VALID_ROUTES = {"products", "orders"}
 
@@ -19,19 +23,19 @@ def router_node(state: AgentState) -> dict:
     )
 
     decision = llm.invoke(
-        f"""Classify the user query into one of these categories:
-    - orders
-    - products
+        f"""Classify the user query into exactly one of these categories:
+- products  (browse products, search, price, stock, variants, images)
+- orders    (anything order-related: view, status, tracking, cancel, return)
 
-    Only return one word: products or orders
+Only return one word.
 
-    Query: {content}
-    """
+Query: {content}
+"""
     )
 
     route = decision.content.strip().lower()
     if route not in VALID_ROUTES:
-        route = "products"
+        route = "orders"
 
     return {"next": route}
 
@@ -44,20 +48,13 @@ def products_node(state: AgentState) -> dict:
     return {"messages": result["messages"][len(input_messages):]}
 
 
-def orders_node(state: AgentState) -> dict:
-    input_messages = [SystemMessage(content=ORDERS_AGENT_PROMPT)] + list(
-        state["messages"]
-    )
-    result = orders_agent.invoke({"messages": input_messages})
-    return {"messages": result["messages"][len(input_messages):]}
-
-
-# Build graph
+# Build main graph
 graph = StateGraph(AgentState)
 
-graph.add_node("router", router_node)
+graph.add_node("router",   router_node)
 graph.add_node("products", products_node)
-graph.add_node("orders", orders_node)
+# Pass compiled sub-graph directly so interrupt() propagates to the checkpointer
+graph.add_node("orders",   orders_graph)
 
 graph.set_entry_point("router")
 
@@ -66,11 +63,11 @@ graph.add_conditional_edges(
     lambda state: state["next"],
     {
         "products": "products",
-        "orders": "orders",
+        "orders":   "orders",
     },
 )
 
 graph.add_edge("products", END)
-graph.add_edge("orders", END)
+graph.add_edge("orders",   END)
 
-app = graph.compile()
+app = graph.compile(checkpointer=MemorySaver())

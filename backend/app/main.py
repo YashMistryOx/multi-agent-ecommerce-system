@@ -9,6 +9,7 @@ import socketio
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.types import Command
 
 from app.logging_config import setup_logging
 
@@ -163,19 +164,41 @@ async def user_message(sid: str, data: dict[str, Any]) -> None:
     session.messages.append({"role": "user", "content": content})
 
     def _run_graph() -> str:
-        history = []
-        for msg in session.messages:
-            if msg["role"] == "user":
-                history.append(HumanMessage(content=msg["content"]))
-            elif msg["role"] == "assistant":
-                history.append(AIMessage(content=msg["content"]))
+        config = {"configurable": {"thread_id": session.session_id}}
 
-        result = agent_app.invoke({
-            "messages": history,
-            "session_id": session.session_id,
-            "session_user_email": session.user_email or "",
-            "next": "",
-        })
+        # Check if the graph is paused mid-workflow waiting for user input.
+        snapshot = agent_app.get_state(config)
+        is_interrupted = bool(snapshot.next)
+
+        if is_interrupted:
+            # Resume the paused node with the user's reply.
+            result = agent_app.invoke(Command(resume=content), config=config)
+        else:
+            # Fresh turn — build message history and start from the router.
+            history = [
+                HumanMessage(content=m["content"]) if m["role"] == "user"
+                else AIMessage(content=m["content"])
+                for m in session.messages
+            ]
+            result = agent_app.invoke(
+                {
+                    "messages": history,
+                    "session_id": session.session_id,
+                    "session_user_email": session.user_email or "",
+                    "next": "",
+                },
+                config=config,
+            )
+
+        # After invoke, check if the graph is now paused at an interrupt().
+        # The interrupt question is NOT stored in messages — it lives in the
+        # graph task's interrupt value and must be surfaced explicitly.
+        new_snapshot = agent_app.get_state(config)
+        if new_snapshot.tasks:
+            for task in new_snapshot.tasks:
+                if task.interrupts:
+                    return str(task.interrupts[0].value)
+
         last = result["messages"][-1]
         return last.content if hasattr(last, "content") else str(last)
 
