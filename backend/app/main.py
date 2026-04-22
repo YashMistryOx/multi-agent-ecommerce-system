@@ -8,12 +8,13 @@ from urllib.parse import parse_qs
 import socketio
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from langchain_core.messages import AIMessage, HumanMessage
 
 from app.logging_config import setup_logging
 
 setup_logging()
 
-from app.agents.runner import run_multi_agent
+from app.agents.graph import app as agent_app
 from app.rag.ingest import run_ingestion
 
 log = logging.getLogger("app.request")
@@ -160,7 +161,25 @@ async def user_message(sid: str, data: dict[str, Any]) -> None:
     )
 
     session.messages.append({"role": "user", "content": content})
-    reply = await asyncio.to_thread(run_multi_agent, session.messages, req_id, session)
+
+    def _run_graph() -> str:
+        history = []
+        for msg in session.messages:
+            if msg["role"] == "user":
+                history.append(HumanMessage(content=msg["content"]))
+            elif msg["role"] == "assistant":
+                history.append(AIMessage(content=msg["content"]))
+
+        result = agent_app.invoke({
+            "messages": history,
+            "session_id": session.session_id,
+            "session_user_email": session.user_email or "",
+            "next": "",
+        })
+        last = result["messages"][-1]
+        return last.content if hasattr(last, "content") else str(last)
+
+    reply = await asyncio.to_thread(_run_graph)
     session.messages.append({"role": "assistant", "content": reply})
 
     log.info(

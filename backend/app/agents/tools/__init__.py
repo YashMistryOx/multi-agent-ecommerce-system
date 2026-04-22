@@ -1,4 +1,4 @@
-from app.agents.tools.orders import ORDERS_TOOLS
-from app.agents.tools.returns import RETURNS_TOOLS
+from app.agents.tools.products import PRODUCT_TOOL_FUNCTIONS
+from app.agents.tools.orders import ORDERS_TOOL_FUNCTIONS
 
-__all__ = ["ORDERS_TOOLS", "RETURNS_TOOLS"]
+__all__ = ["PRODUCT_TOOL_FUNCTIONS", "ORDERS_TOOL_FUNCTIONS"]

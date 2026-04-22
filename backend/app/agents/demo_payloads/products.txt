@@ -1,0 +1,36 @@
+
+get_all_products()
+[{'id': 8778878877886, 'title': 'bandhej shirt men', 'body_html': '<p>Men traditional shirts</p>', 'vendor': 'Omnimarket', 'product_type': '', 'created_at': '2026-04-22T00:29:42-04:00', 'handle': 'bandhej-shirt-men', 'updated_at': '2026-04-22T00:29:52-04:00', 'published_at': '2026-04-22T00:29:45-04:00', 'template_suffix': '', 'published_scope': 'global', 'tags': '', 'status': 'active', 'admin_graphql_api_id': 'gid://shopify/Product/8778878877886', 'variants': [...], 'options': [...], 'images': [...], 'image': {...}}, {'id': 8778879828158, 'title': 'Long Men kurta', 'body_html': '<p>Traditional long sleeve kurta men.</p>', 'vendor': 'Omnimarket', 'product_type': '', 'created_at': '2026-04-22T00:31:07-04:00', 'handle': 'long-men-kurta', 'updated_at': '2026-04-22T00:31:12-04:00', 'published_at': '2026-04-22T00:31:08-04:00', 'template_suffix': '', 'published_scope': 'global', 'tags': '', 'status': 'active', 'admin_graphql_api_id': 'gid://shopify/Product/8778879828158', 'variants': [...], 'options': [...], 'images': [...], 'image': {...}}]
+d = get_all_products()
+
+-------------------------------------------------------------------------------------------------------
+
+get_product_by_id(8778878877886)
+{'id': 8778878877886, 'title': 'bandhej shirt men', 'body_html': '<p>Men traditional shirts</p>', 'vendor': 'Omnimarket', 'product_type': '', 'created_at': '2026-04-22T00:29:42-04:00', 'handle': 'bandhej-shirt-men', 'updated_at': '2026-04-22T00:29:52-04:00', 'published_at': '2026-04-22T00:29:45-04:00', 'template_suffix': '', 'published_scope': 'global', 'tags': '', 'status': 'active', 'admin_graphql_api_id': 'gid://shopify/Product/8778878877886', 'variants': [{...}], 'options': [{...}], 'images': [{...}], 'image': {'id': 41666748743870, 'alt': None, 'position': 1, 'product_id': 8778878877886, 'created_at': '2026-04-22T00:28:46-04:00', 'updated_at': '2026-04-22T00:29:44-04:00', 'admin_graphql_api_id': 'gid://shopify/MediaImage/32778321002686', 'width': 194, 'height': 259, 'src': 'https://cdn.shopify.com/s/files/1/0762/7617/0942/files/men-shirts-1.jpg?v=1776832127', 'variant_ids': [...]}}
+
+-------------------------------------------------------------------------------------------------------
+
+search_products_by_title('bandhej shirt men')
+[{'id': 8778878877886, 'title': 'bandhej shirt men', 'body_html': '<p>Men traditional shirts</p>', 'vendor': 'Omnimarket', 'product_type': '', 'created_at': '2026-04-22T00:29:42-04:00', 'handle': 'bandhej-shirt-men', 'updated_at': '2026-04-22T00:29:52-04:00', 'published_at': '2026-04-22T00:29:45-04:00', 'template_suffix': '', 'published_scope': 'global', 'tags': '', 'status': 'active', 'admin_graphql_api_id': 'gid://shopify/Product/8778878877886', 'variants': [...], 'options': [...], 'images': [...], 'image': {...}}]
+
+-------------------------------------------------------------------------------------------------------
+
+
+get_product_inventory(8778878877886)
+95
+
+-------------------------------------------------------------------------------------------------------
+
+
+get_product_price(8778878877886)
+'500.00'
+pp = 8778878877886
+
+
+-------------------------------------------------------------------------------------------------------
+
+
+list_product_variants(pp)
+[{'id': 46663709065406, 'product_id': 8778878877886, 'title': 'Default Title', 'price': '500.00', 'position': 1, 'inventory_policy': 'deny', 'compare_at_price': None, 'option1': 'Default Title', 'option2': None, 'option3': None, 'created_at': '2026-04-22T00:29:44-04:00', 'updated_at': '2026-04-22T00:29:44-04:00', 'taxable': True, 'barcode': '', 'fulfillment_service': 'manual', 'grams': 100, 'inventory_management': 'shopify', 'requires_shipping': True, 'sku': None, ...}]
+get_product_image_urls(pp)
+['https://cdn.shopify.com/s/files/1/0762/7617/0942/files/men-shirts-1.jpg?v=1776832127']

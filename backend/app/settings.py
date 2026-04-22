@@ -1,9 +1,12 @@
 from functools import lru_cache
 from pathlib import Path
 
+from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_ROOT = Path(__file__).resolve().parent.parent
+
+load_dotenv(dotenv_path=BACKEND_ROOT / ".env", override=True)
 
 
 class Settings(BaseSettings):
@@ -30,13 +33,17 @@ class Settings(BaseSettings):
     mongodb_orders_collection: str = "orders"
     mongodb_returns_collection: str = "returns"
 
-    # Gmail SMTP (use app password). Leave empty to skip sending email.
-    smtp_host: str = ""
-    smtp_port: int = 587
-    smtp_use_tls: bool = True
-    smtp_user: str = ""
-    smtp_password: str = ""
-    smtp_from_email: str = ""
+    # Shopify API
+    shopify_api_key: str = ""
+    shopify_password: str = ""
+    shopify_shop_name: str = ""
+    shopify_client_id: str = ""
+    shopify_client_secret: str = ""
+    shopify_access_token: str = ""
+    shopify_api_version: str = ""
+    shopify_base_url: str = ""
+    
+ 
 
     @property
     def milvus_connection_args(self) -> dict:
