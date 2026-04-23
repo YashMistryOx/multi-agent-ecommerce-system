@@ -9,6 +9,8 @@ Deterministic multi-step flow:
       ↓
   select_order          ──(no returnable orders)──→ END
       ↓
+  check_eligibility     ──(ineligible: already returned, refunded, not shipped, etc.)──→ END
+      ↓
   fetch_items           (fetches fulfillment line items via GraphQL)
       ↓
   select_item           ──(interrupt if multiple items)
@@ -35,6 +37,7 @@ from app.agents.tools.returns import (
     get_returnable_orders_by_email,
     get_return_policy,
     get_return_reasons,
+    get_existing_returns,
     get_fulfillment_line_items,
     submit_return_request,
 )
@@ -129,6 +132,114 @@ def rr_select_order(state: AgentState) -> dict:
     return _set_data(state, selected_order=selected)
 
 
+def _check_policy_eligibility(order: dict, policy_text: str) -> tuple[bool, str]:
+    """Ask the LLM to evaluate the order against the full return policy.
+
+    Returns (is_eligible, reason_if_ineligible).
+    """
+    from datetime import datetime, timezone
+
+    created_at = order.get("created_at", "")
+    order_age = ""
+    if created_at:
+        try:
+            order_date = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+            age_days = (datetime.now(timezone.utc) - order_date).days
+            order_age = f"Order placed {age_days} days ago."
+        except Exception:
+            pass
+
+    items_summary = ", ".join(
+        f"{li.get('title', 'Unknown')} (qty: {li.get('quantity', 1)})"
+        for li in order.get("line_items", [])
+    ) or "Unknown items"
+
+    response = llm.invoke(
+        f"You are a returns eligibility checker. Based ONLY on the store policy below, "
+        f"decide if this order is eligible for a return.\n\n"
+        f"Order details:\n"
+        f"- Financial status: {order.get('financial_status', 'unknown')}\n"
+        f"- Fulfillment status: {order.get('fulfillment_status', 'unknown')}\n"
+        f"- {order_age}\n"
+        f"- Items: {items_summary}\n\n"
+        f"Store return/refund policy:\n{policy_text[:3000]}\n\n"
+        f"Reply in this exact format (two lines):\n"
+        f"ELIGIBLE: yes  OR  ELIGIBLE: no\n"
+        f"REASON: <one sentence reason if not eligible, or 'Order meets return policy' if eligible>"
+    ).content.strip()
+
+    eligible = True
+    reason = ""
+    for line in response.splitlines():
+        line = line.strip()
+        if line.upper().startswith("ELIGIBLE:"):
+            eligible = "yes" in line.split(":", 1)[-1].lower()
+        elif line.upper().startswith("REASON:"):
+            reason = line.split(":", 1)[-1].strip()
+
+    return eligible, reason
+
+
+def rr_check_eligibility(state: AgentState) -> dict:
+    """Validate the selected order is actually eligible for a new return request."""
+    print("NODE: rr_check_eligibility")
+
+    order = _data(state)["selected_order"]
+    order_num = order.get("order_number", order.get("id", "?"))
+    order_id_int = order.get("id")
+    financial_status = order.get("financial_status", "")
+    fulfillment_status = order.get("fulfillment_status", "")
+
+    reasons_ineligible = []
+
+    # 1. Hard checks that don't need policy interpretation
+    if financial_status in ("refunded", "voided"):
+        reasons_ineligible.append(f"this order has already been {financial_status}")
+
+    if fulfillment_status not in ("fulfilled", "partial"):
+        reasons_ineligible.append("this order hasn't shipped yet (use cancel instead)")
+
+    # 2. Already has an open or completed return request
+    if order_id_int:
+        existing = get_existing_returns.invoke({"order_id": order_id_int})
+        open_returns = [
+            r for r in existing
+            if r.get("status", "").upper() not in ("DECLINED", "CANCELLED", "CLOSED")
+        ]
+        if open_returns:
+            statuses = ", ".join(
+                r.get("status", "unknown").lower() for r in open_returns
+            )
+            reasons_ineligible.append(f"a return is already {statuses} for this order")
+
+    # 3. Full policy evaluation — covers return window, item exclusions, conditions, etc.
+    if not reasons_ineligible:
+        try:
+            policy_text = get_return_policy.invoke({})
+            if policy_text and "No return policy found" not in policy_text:
+                policy_eligible, policy_reason = _check_policy_eligibility(order, policy_text)
+                if not policy_eligible:
+                    reasons_ineligible.append(policy_reason)
+        except Exception:
+            pass
+
+    if reasons_ineligible:
+        reason_text = "; ".join(reasons_ineligible)
+        msg = llm.invoke(
+            f"You are a chat support assistant. Write a short, casual chat message "
+            f"(NOT an email — no subject line, no 'Dear', no sign-off). "
+            f"Tell the customer that order #{order_num} is not eligible for a return because: "
+            f"{reason_text}. Suggest they contact support if they need further help. "
+            f"Keep it friendly and under 3 lines."
+        ).content
+        return {
+            **_set_data(state, selected_order=None, ineligible_reason=reason_text),
+            "messages": [AIMessage(content=msg)],
+        }
+
+    return _set_data(state, eligible=True)
+
+
 def rr_fetch_items(state: AgentState) -> dict:
     """Fetch the fulfillment line items (with GraphQL IDs) for the selected order."""
     print("NODE: rr_fetch_items")
@@ -210,19 +321,19 @@ def rr_ask_confirmation(state: AgentState) -> dict:
     order = data["selected_order"]
     item = data["selected_item"]
     order_num = order.get("order_number", order.get("id"))
-    policy = get_return_policy.invoke({})
 
+    # Policy eligibility has already been enforced in rr_check_eligibility.
+    # Only summarise the return details here — no policy re-evaluation.
     confirmation_prompt = llm.invoke(
-        f"You are a helpful customer support assistant. "
-        f"Ask the customer to confirm their return request in a clear, friendly tone. "
-        f"Include the following details naturally in your message:\n"
-        f"- Order number: #{order_num}\n"
-        f"- Item to return: {item.get('title', 'Unknown')}"
-        f"{' - ' + item['variant_title'] if item.get('variant_title') else ''}\n"
-        f"- Reason: {data.get('selected_reason_name', 'Not specified')}\n"
-        f"{('- Customer note: ' + data['reason_note']) if data.get('reason_note') else ''}\n"
-        f"{'- Store return policy: ' + policy if policy else ''}\n\n"
-        f"End by asking them to reply with 'yes' to submit or 'no' to cancel."
+        f"You are a chat support assistant. Write a short, casual chat message (NOT an email — "
+        f"no subject line, no greeting like 'Dear', no sign-off). "
+        f"Summarise the return request and ask the customer to confirm. "
+        f"Keep it conversational and concise, 3-4 lines max. "
+        f"Details to include: order #{order_num}, "
+        f"item: {item.get('title', 'Unknown')}"
+        f"{' - ' + item['variant_title'] if item.get('variant_title') else ''}, "
+        f"reason: {data.get('selected_reason_name', 'Not specified')}. "
+        f"End with: reply yes to confirm or no to cancel."
     ).content
 
     confirm = interrupt(confirmation_prompt)
@@ -290,6 +401,12 @@ def rr_execute(state: AgentState) -> dict:
 def _route_after_select_order(state: AgentState) -> str:
     if not _data(state).get("selected_order"):
         return "end"
+    return "check_eligibility"
+
+
+def _route_after_check_eligibility(state: AgentState) -> str:
+    if not _data(state).get("eligible"):
+        return "end"
     return "fetch_items"
 
 
@@ -311,14 +428,15 @@ def _route_after_confirm(state: AgentState) -> str:
 
 _g = StateGraph(AgentState)
 
-_g.add_node("collect_email",   rr_collect_email)
-_g.add_node("fetch_orders",    rr_fetch_orders)
-_g.add_node("select_order",    rr_select_order)
-_g.add_node("fetch_items",     rr_fetch_items)
-_g.add_node("select_item",     rr_select_item)
-_g.add_node("collect_reason",  rr_collect_reason)
-_g.add_node("ask_confirmation", rr_ask_confirmation)
-_g.add_node("execute_return",  rr_execute)
+_g.add_node("collect_email",      rr_collect_email)
+_g.add_node("fetch_orders",       rr_fetch_orders)
+_g.add_node("select_order",       rr_select_order)
+_g.add_node("check_eligibility",  rr_check_eligibility)
+_g.add_node("fetch_items",        rr_fetch_items)
+_g.add_node("select_item",        rr_select_item)
+_g.add_node("collect_reason",     rr_collect_reason)
+_g.add_node("ask_confirmation",   rr_ask_confirmation)
+_g.add_node("execute_return",     rr_execute)
 
 _g.set_entry_point("collect_email")
 
@@ -328,6 +446,12 @@ _g.add_edge("fetch_orders",  "select_order")
 _g.add_conditional_edges(
     "select_order",
     _route_after_select_order,
+    {"check_eligibility": "check_eligibility", "end": END},
+)
+
+_g.add_conditional_edges(
+    "check_eligibility",
+    _route_after_check_eligibility,
     {"fetch_items": "fetch_items", "end": END},
 )
 
