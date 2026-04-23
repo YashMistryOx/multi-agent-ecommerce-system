@@ -227,7 +227,7 @@ def rr_ask_confirmation(state: AgentState) -> dict:
         f"{' - ' + item['variant_title'] if item.get('variant_title') else ''}\n"
         f"- Reason: {data.get('selected_reason_name', 'Not specified')}\n"
         f"{('- Customer note: ' + data['reason_note']) if data.get('reason_note') else ''}\n"
-        f"{'- Store return policy: ' + policy[:300] if policy else ''}\n\n"
+        f"{'- Store return policy: ' + policy if policy else ''}\n\n"
         f"End by asking them to reply with 'yes' to submit or 'no' to cancel."
     ).content
 

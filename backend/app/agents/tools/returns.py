@@ -75,16 +75,24 @@ def get_return_reasons() -> List[Dict[str, str]]:
     print("TOOL: get_return_reasons")
     query = """
     {
-      suggestedReturnReasonDefinitions {
-        id
-        handle
-        name
+      returnReasonDefinitions(first: 20) {
+        edges {
+          node {
+            id
+            name
+          }
+        }
       }
     }
     """
     try:
         data = _graphql(query)
-        return data.get("data", {}).get("suggestedReturnReasonDefinitions", [])
+        errors = data.get("errors")
+        if errors:
+            print(f"GraphQL errors fetching return reasons: {errors}")
+            return []
+        edges = data.get("data", {}).get("returnReasonDefinitions", {}).get("edges", [])
+        return [e["node"] for e in edges]
     except Exception as e:
         print(f"Error fetching return reasons: {e}")
         return []
