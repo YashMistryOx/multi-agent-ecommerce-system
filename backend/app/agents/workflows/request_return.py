@@ -39,6 +39,23 @@ from app.agents.tools.returns import (
     submit_return_request,
 )
 
+
+def _match_reason(customer_description: str, reasons: list) -> dict:
+    """Use the LLM to silently pick the best matching reason from the live Shopify list."""
+    reasons_text = "\n".join(f"- {r['name']}" for r in reasons)
+    decision = llm.invoke(
+        f"A customer wants to return an item. Their description: \"{customer_description}\"\n\n"
+        f"Match this to exactly one of the following return reasons:\n"
+        f"{reasons_text}\n\n"
+        f"Reply with ONLY the exact reason name from the list above, nothing else."
+    )
+    matched_name = decision.content.strip()
+    for r in reasons:
+        if r["name"].lower() == matched_name.lower():
+            return r
+    # fallback to last entry (typically "Other") if no match
+    return reasons[-1]
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -157,55 +174,32 @@ def rr_select_item(state: AgentState) -> dict:
 
 
 def rr_collect_reason(state: AgentState) -> dict:
-    """Fetch valid return reasons, ask the user to pick one, and ensure a note is provided."""
+    """Ask the customer to describe their reason in plain words, then auto-classify it."""
     print("NODE: rr_collect_reason")
-    reasons = get_return_reasons.invoke({})
 
+    description = interrupt(
+        "Could you briefly tell us why you'd like to return this item? "
+        "(e.g. 'it's too big', 'the colour is different from the photo', 'it arrived damaged')"
+    )
+    description = description.strip()
+
+    # Fetch live reasons from Shopify, then let the LLM pick the best match silently.
+    reasons = get_return_reasons.invoke({})
     if not reasons:
-        # No structured reasons available — ask for a free-text description instead.
-        note = interrupt(
-            "Please describe the reason for your return "
-            "(e.g. 'wrong size', 'item arrived damaged', 'changed my mind')."
-        )
         return _set_data(
             state,
             selected_reason_id=None,
             selected_reason_name="Other",
-            reason_note=note.strip(),
+            reason_note=description,
         )
 
-    summary = "\n".join(
-        f"{i + 1}. {r.get('name', r.get('handle', 'Unknown'))}"
-        for i, r in enumerate(reasons)
-    )
-    choice = interrupt(
-        f"Please select the reason for your return:\n\n{summary}\n\n"
-        f"Reply with the number, and optionally add a note after a comma "
-        f"(e.g. '2, the size was too small')."
-    )
-
-    note = ""
-    try:
-        parts = choice.strip().split(",", 1)
-        idx = int(parts[0].strip()) - 1
-        selected_reason = reasons[max(0, min(idx, len(reasons) - 1))]
-        note = parts[1].strip() if len(parts) > 1 else ""
-    except (ValueError, IndexError):
-        selected_reason = reasons[0]
-
-    # Reason note is required — ask for it if the user didn't include one.
-    if not note:
-        note = interrupt(
-            f"Could you add a brief description for your return? "
-            f"(e.g. 'the size didn't fit', 'item was damaged on arrival')"
-        )
-        note = note.strip()
+    matched_reason = _match_reason(description, reasons)
 
     return _set_data(
         state,
-        selected_reason_id=selected_reason["id"],
-        selected_reason_name=selected_reason.get("name", ""),
-        reason_note=note,
+        selected_reason_id=matched_reason["id"],
+        selected_reason_name=matched_reason["name"],
+        reason_note=description,
     )
 
 
