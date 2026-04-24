@@ -1,9 +1,14 @@
+import re
 from typing import List, Dict, Optional, Any
 
 import requests
 from langchain_core.tools import tool
 
 from app.settings import get_settings
+
+
+def _strip_html(text: str) -> str:
+    return re.sub(r"<[^>]+>", " ", text or "").strip()
 
 
 def _shopify_headers() -> Dict[str, str]:
@@ -127,6 +132,84 @@ def get_product_image_urls(product_id: int) -> List[str]:
         return []
 
 
+@tool
+def recommend_products(query: str) -> List[Dict[str, Any]]:
+    """Recommend products from the store that best match a customer's natural language request.
+
+    Call this tool whenever the user:
+    - Asks for a recommendation or suggestion of any kind
+    - Describes a need, goal, problem, occasion, or use case
+    - Mentions a budget, recipient, preference, or lifestyle
+    - Uses words like 'suggest', 'recommend', 'looking for', 'need something', 'what do you have for'
+    - Asks what's popular, best-selling, new, or trending
+
+    Pass the user's message (or a concise rephrasing of their intent) as the query.
+    Never recommend products from memory — always call this tool so results are based on
+    the actual live store catalog.
+
+    Returns a list of matched products, each with a 'recommendation_reason' field.
+    """
+    print(f"TOOL: recommend_products query={query!r}")
+
+    # --- 1. Load all products with their details ---
+    url = f"{_base_url()}/products.json?limit=100"
+    try:
+        response = requests.get(url, headers=_shopify_headers())
+        response.raise_for_status()
+        products = response.json().get("products", [])
+    except Exception as e:
+        print(f"Error fetching products for recommendation: {e}")
+        return []
+
+    if not products:
+        return []
+
+    # --- 2. Build a compact catalog for the LLM to reason over ---
+    catalog_lines = []
+    for p in products:
+        price = p.get("variants", [{}])[0].get("price", "N/A")
+        description = _strip_html(p.get("body_html", ""))[:300]
+        tags = p.get("tags", "")
+        catalog_lines.append(
+            f"ID:{p['id']} | {p['title']} | type:{p.get('product_type', '')} "
+            f"| tags:{tags} | price:{price} | desc:{description}"
+        )
+    catalog_text = "\n".join(catalog_lines)
+
+    # --- 3. Ask the LLM to pick the best matches and explain why ---
+    from app.agents import llm
+
+    prompt = (
+        f"You are a helpful shopping assistant. A customer said: \"{query}\"\n\n"
+        f"Below is the store's product catalog (one product per line):\n"
+        f"{catalog_text}\n\n"
+        f"Select the top 3–5 most relevant products for the customer's request. "
+        f"Reply ONLY as a JSON array where each element has:\n"
+        f'  "id": <product id as integer>,\n'
+        f'  "reason": <one sentence explaining why this product fits the request>\n'
+        f"Output only valid JSON, no markdown fences, no extra text."
+    )
+
+    try:
+        raw = llm.invoke(prompt).content.strip()
+        matches = __import__("json").loads(raw)
+    except Exception as e:
+        print(f"LLM recommendation parsing failed: {e}")
+        return []
+
+    # --- 4. Attach the reason to the full product object ---
+    product_by_id = {p["id"]: p for p in products}
+    results = []
+    for match in matches:
+        pid = match.get("id")
+        if pid and pid in product_by_id:
+            product = dict(product_by_id[pid])
+            product["recommendation_reason"] = match.get("reason", "")
+            results.append(product)
+
+    return results
+
+
 PRODUCT_TOOL_FUNCTIONS = [
     get_all_products,
     get_product_by_id,
@@ -135,4 +218,5 @@ PRODUCT_TOOL_FUNCTIONS = [
     get_product_price,
     list_product_variants,
     get_product_image_urls,
+    recommend_products,
 ]
