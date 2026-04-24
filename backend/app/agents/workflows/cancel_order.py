@@ -57,7 +57,10 @@ def co_collect_email(state: AgentState) -> dict:
         return _set_data(state, email=email)
 
     email = interrupt("Please provide your email address so I can look up your orders.")
-    return _set_data(state, email=email.strip())
+    email = email.strip()
+    # Persist back to session_user_email so other workflows in this session
+    # can reuse the email without asking again.
+    return {**_set_data(state, email=email), "session_user_email": email}
 
 
 def co_fetch_orders(state: AgentState) -> dict:

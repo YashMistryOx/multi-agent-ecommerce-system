@@ -142,6 +142,123 @@ def cancel_order(order_id: int, reason: str = "customer") -> Dict[str, Any]:
         return {"error": str(e)}
 
 
+def create_full_refund_for_order(
+    order_id: int, note: str = "Customer refund (chat workflow)"
+) -> Dict[str, Any]:
+    """
+    Issue a full refund for an order via Shopify REST: refunds/calculate.json then refunds.json.
+    Used by the deterministic refund workflow only (not exposed as an agent tool).
+    """
+    print(f"API: create_full_refund_for_order order_id={order_id}")
+    headers = {**_shopify_headers(), "Content-Type": "application/json"}
+    base = _base_url()
+
+    try:
+        or_resp = requests.get(f"{base}/orders/{order_id}.json", headers=_shopify_headers())
+        or_resp.raise_for_status()
+        order = or_resp.json().get("order")
+        if not order:
+            return {"error": "Order not found."}
+
+        if order.get("financial_status") == "refunded":
+            return {"error": "This order has already been fully refunded."}
+
+        line_items = order.get("line_items") or []
+        refund_line_items: list[Dict[str, Any]] = []
+        for li in line_items:
+            qty = int(li.get("quantity") or 0)
+            if qty <= 0:
+                continue
+            refund_line_items.append(
+                {
+                    "line_item_id": li["id"],
+                    "quantity": qty,
+                    "restock_type": "no_restock",
+                }
+            )
+
+        if not refund_line_items:
+            return {"error": "No line items available to refund on this order."}
+
+        currency = order.get("currency") or order.get("presentment_currency") or "USD"
+
+        calc_payload = {
+            "refund": {
+                "currency": currency,
+                "refund_line_items": refund_line_items,
+                "shipping": {"full_refund": True},
+            }
+        }
+        calc_resp = requests.post(
+            f"{base}/orders/{order_id}/refunds/calculate.json",
+            headers=headers,
+            json=calc_payload,
+        )
+        if not calc_resp.ok:
+            return {
+                "error": (
+                    f"Refund calculate failed ({calc_resp.status_code}): "
+                    f"{calc_resp.text[:500]}"
+                )
+            }
+
+        calc_refund = calc_resp.json().get("refund") or {}
+        transactions: list[Dict[str, Any]] = []
+        for t in calc_refund.get("transactions") or []:
+            parent_id = t.get("parent_id")
+            if not parent_id:
+                continue
+            tx: Dict[str, Any] = {
+                "parent_id": parent_id,
+                "amount": t.get("amount"),
+                "kind": "refund",
+                "gateway": t.get("gateway") or "",
+            }
+            if t.get("currency"):
+                tx["currency"] = t["currency"]
+            transactions.append(tx)
+
+        if not transactions:
+            return {
+                "error": (
+                    "Shopify could not build refund transactions for this order "
+                    "(often because nothing was captured yet, or the order cannot be refunded)."
+                )
+            }
+
+        create_refund: Dict[str, Any] = {
+            "notify": True,
+            "note": note,
+            "currency": currency,
+            "refund_line_items": calc_refund.get("refund_line_items") or refund_line_items,
+            "transactions": transactions,
+        }
+        if calc_refund.get("shipping"):
+            create_refund["shipping"] = calc_refund["shipping"]
+
+        ref_resp = requests.post(
+            f"{base}/orders/{order_id}/refunds.json",
+            headers=headers,
+            json={"refund": create_refund},
+        )
+        if not ref_resp.ok:
+            return {
+                "error": (
+                    f"Refund create failed ({ref_resp.status_code}): {ref_resp.text[:500]}"
+                )
+            }
+
+        refund = ref_resp.json().get("refund") or {}
+        return {
+            "refund_id": refund.get("id"),
+            "status": refund.get("status"),
+            "transactions": refund.get("transactions"),
+        }
+    except Exception as e:
+        print(f"Error creating full refund: {e}")
+        return {"error": str(e)}
+
+
 @tool
 def get_cancellation_policy() -> str:
     """Fetch the store's cancellation / refund policy from Shopify."""

@@ -42,8 +42,11 @@ class Settings(BaseSettings):
     shopify_access_token: str = ""
     shopify_api_version: str = ""
     shopify_base_url: str = ""
-    
- 
+
+    # Refund workflow: auto-approve full refunds in Shopify when order total (shop
+    # currency, same units as Shopify `current_total_price` / `total_price`) is below this.
+    refund_auto_approve_max_amount: float = 2000.0
+
 
     @property
     def milvus_connection_args(self) -> dict:

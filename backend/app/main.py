@@ -174,8 +174,10 @@ async def user_message(sid: str, data: dict[str, Any]) -> None:
             # Resume the paused node with the user's reply.
             result = agent_app.invoke(Command(resume=content), config=config)
         else:
-            # Fresh turn — build message history and start from the router.
-            history = [
+            # Fresh turn — use authenticated_email if the user already provided
+            # it in a previous workflow; fall back to the profile email.
+            known_email = session.authenticated_email or session.user_email or ""
+            history = [ 
                 HumanMessage(content=m["content"]) if m["role"] == "user"
                 else AIMessage(content=m["content"])
                 for m in session.messages
@@ -184,7 +186,7 @@ async def user_message(sid: str, data: dict[str, Any]) -> None:
                 {
                     "messages": history,
                     "session_id": session.session_id,
-                    "session_user_email": session.user_email or "",
+                    "session_user_email": known_email,
                     "next": "",
                 },
                 config=config,
@@ -194,6 +196,17 @@ async def user_message(sid: str, data: dict[str, Any]) -> None:
         # The interrupt question is NOT stored in messages — it lives in the
         # graph task's interrupt value and must be surfaced explicitly.
         new_snapshot = agent_app.get_state(config)
+
+        # Persist any email that was collected during this turn so that
+        # switching to a different workflow won't ask for it again.
+        state_vals = new_snapshot.values
+        collected_email = (
+            state_vals.get("session_user_email", "").strip()
+            or (state_vals.get("workflow_data") or {}).get("email", "").strip()
+        )
+        if collected_email:
+            session.authenticated_email = collected_email
+
         if new_snapshot.tasks:
             for task in new_snapshot.tasks:
                 if task.interrupts:

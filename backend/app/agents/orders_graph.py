@@ -7,8 +7,9 @@ An internal supervisor then decides:
   user message
        ↓
   [orders_supervisor]
-       ├── tool_call    → orders_agent  (free-form, read-only lookups)
-       └── cancel_order → cancel_order_graph (deterministic multi-step)
+       ├── tool_call      → orders_agent  (free-form, read-only lookups)
+       ├── cancel_order   → cancel_order_graph (deterministic multi-step)
+       └── process_refund → refund_order_graph (refund money in Shopify when rules allow)
 """
 
 from langchain_core.messages import SystemMessage
@@ -19,16 +20,19 @@ from app.agents.orders import orders_agent
 from app.agents.prompts import ORDERS_AGENT_PROMPT
 from app.agents.state import AgentState
 from app.agents.workflows.cancel_order import cancel_order_graph
+from app.agents.workflows.refund_order import refund_order_graph
 
-VALID_ACTIONS = {"tool_call", "cancel_order"}
+VALID_ACTIONS = {"tool_call", "cancel_order", "process_refund"}
 
 SUPERVISOR_PROMPT = """You are an orders assistant supervisor.
 Classify the user message into exactly one of these actions:
 
-- tool_call    → read-only request: view orders, check status, tracking, order details
-- cancel_order → user wants to cancel an existing order
+- tool_call       → read-only request: view orders, check status, tracking, order details
+- cancel_order    → user wants to cancel an existing order before it ships / stop the order
+- process_refund  → user wants their money back: refund, reimbursement, charge reversal,
+                    "refund my payment", "I want a refund" (not the same as a merchandise return flow)
 
-Only return one word: tool_call or cancel_order
+Only return one word: tool_call, cancel_order, or process_refund
 
 Message: {message}
 """
@@ -64,6 +68,7 @@ _g.add_node("supervisor",    orders_supervisor_node)
 _g.add_node("orders_agent",  orders_agent_node)
 # Pass the compiled graph directly so interrupt() propagates to the parent checkpointer
 _g.add_node("cancel_order",  cancel_order_graph)
+_g.add_node("process_refund", refund_order_graph)
 
 _g.set_entry_point("supervisor")
 
@@ -71,12 +76,14 @@ _g.add_conditional_edges(
     "supervisor",
     lambda state: state["next"],
     {
-        "tool_call":    "orders_agent",
-        "cancel_order": "cancel_order",
+        "tool_call":      "orders_agent",
+        "cancel_order":   "cancel_order",
+        "process_refund": "process_refund",
     },
 )
 
 _g.add_edge("orders_agent", END)
 _g.add_edge("cancel_order", END)
+_g.add_edge("process_refund", END)
 
 orders_graph = _g.compile()
